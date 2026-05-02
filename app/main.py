@@ -10,7 +10,6 @@ Security:
 
 Performance:
 - Load Jobs (not streaming inserts for batch)
-- Retry logic with exponential backoff
 - Connection pooling
 - Async DLQ
 
@@ -25,7 +24,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, ValidationInfo
 from google.cloud import bigquery, storage, logging as cloud_logging
 from google.cloud.exceptions import NotFound, GoogleCloudError
-from google.api_core import retry, exceptions
+from google.api_core import exceptions
 from datetime import datetime
 from typing import List, Dict, Optional, Any
 from enum import Enum
@@ -53,15 +52,12 @@ BACKUP_BUCKET = f"{PROJECT_ID}-backups"
 # STRUCTURED LOGGING
 # ══════════════════════════════════════════════════════════════════
 
-
 logging_client = cloud_logging.Client(project=PROJECT_ID)
 logger = logging_client.logger("globant-api")
-
 
 def log_info(message: str, **kwargs):
     """Structured logging at INFO level"""
     logger.log_struct({"message": message, **kwargs}, severity="INFO")
-
 
 def log_error(message: str, error: Exception = None, **kwargs):
     """Structured logging at ERROR level"""
@@ -71,11 +67,9 @@ def log_error(message: str, error: Exception = None, **kwargs):
         error_details["error_type"] = type(error).__name__
     logger.log_struct(error_details, severity="ERROR")
 
-
 def log_warning(message: str, **kwargs):
     """Structured logging at WARNING level"""
     logger.log_struct({"message": message, **kwargs}, severity="WARNING")
-
 
 # ══════════════════════════════════════════════════════════════════
 # CLIENT INITIALIZATION WITH CONNECTION POOLING
@@ -83,7 +77,6 @@ def log_warning(message: str, **kwargs):
 
 bq_client = None
 storage_client = None
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -99,7 +92,6 @@ async def lifespan(app: FastAPI):
     
     log_info("API shutdown initiated")
     # Cleanup if needed
-
 
 app = FastAPI(
     title="Globant Data Migration API",
@@ -117,7 +109,6 @@ class TableName(str, Enum):
     EMPLOYEES = "employees"
     DEPARTMENTS = "departments"
     JOBS = "jobs"
-
 
 # ══════════════════════════════════════════════════════════════════
 # PYDANTIC MODELS WITH STRICT VALIDATION
@@ -165,7 +156,6 @@ class Employee(BaseModel):
             raise ValueError("Name exceeds 255 characters")
         return v
 
-
 class Department(BaseModel):
     """Department record with validation"""
     id: int = Field(..., gt=0, description="Department ID")
@@ -179,7 +169,6 @@ class Department(BaseModel):
         if not v:
             raise ValueError("Department name cannot be empty")
         return v
-
 
 class Job(BaseModel):
     """Job record with validation"""
@@ -195,7 +184,6 @@ class Job(BaseModel):
             raise ValueError("Job title cannot be empty")
         return v
 
-
 class BatchRequest(BaseModel):
     """Batch insert request with validation"""
     table: TableName = Field(..., description="Table name (enum validated)")
@@ -206,11 +194,9 @@ class BatchRequest(BaseModel):
         description="Records to insert (1-1000)"
     )
 
-
 # ══════════════════════════════════════════════════════════════════
 # SCHEMA DEFINITIONS (Data Quality)
 # ══════════════════════════════════════════════════════════════════
-
 
 SCHEMAS = {
     "employees": [
@@ -230,7 +216,6 @@ SCHEMAS = {
     ],
 }
 
-
 def get_validator(table: str):
     """Get Pydantic validator for table"""
     validators = {
@@ -240,20 +225,17 @@ def get_validator(table: str):
     }
     return validators.get(table)
 
-
 def get_schema(table: str) -> List[bigquery.SchemaField]:
     """Get BigQuery schema for table"""
     return SCHEMAS.get(table, [])
-
 
 # ══════════════════════════════════════════════════════════════════
 # DLQ WITH ERROR HANDLING
 # ══════════════════════════════════════════════════════════════════
 
-@retry.Retry(predicate=retry.if_exception_type(GoogleCloudError), deadline=30.0)
 async def log_to_dlq(table: str, invalid_records: List[Dict]):
     """
-    Log invalid records to DLQ with retry logic
+    Log invalid records to DLQ (Removed synchronous retry to prevent async blocking)
     """
     if not invalid_records:
         return True
@@ -291,16 +273,11 @@ async def log_to_dlq(table: str, invalid_records: List[Dict]):
         log_error("DLQ write failed", error=e, table=table, count=len(invalid_records))
         return False
 
-
 # ══════════════════════════════════════════════════════════════════
 # DATA INGESTION WITH LOAD JOBS 
 # ══════════════════════════════════════════════════════════════════
 
 @app.post("/ingest", response_model=Dict[str, Any])
-@retry.Retry(
-    predicate=retry.if_exception_type(exceptions.ServiceUnavailable),
-    deadline=60.0
-)
 async def ingest_batch(request: BatchRequest, background_tasks: BackgroundTasks):
     """
     Batch insert with multi-layer validation and Load Jobs
@@ -327,7 +304,7 @@ async def ingest_batch(request: BatchRequest, background_tasks: BackgroundTasks)
         try:
             # Pydantic validation (type + constraints + custom)
             validated = validator(**record)
-            # Actualizado de .dict() a .model_dump() para Pydantic V2
+            # Actualizado a .model_dump() para Pydantic V2
             valid_records.append(validated.model_dump())
             
         except Exception as e:
@@ -394,7 +371,6 @@ async def ingest_batch(request: BatchRequest, background_tasks: BackgroundTasks)
             )
             
         except exceptions.ServiceUnavailable as e:
-            # BigQuery temporarily unavailable (will retry via decorator)
             log_error("BigQuery unavailable", error=e, table=table_name)
             raise HTTPException(503, "BigQuery temporarily unavailable")
             
@@ -415,29 +391,19 @@ async def ingest_batch(request: BatchRequest, background_tasks: BackgroundTasks)
         "table": table_name
     }
     
-    log_info(
-        "Ingestion completed",
-        **response
-    )
-    
+    log_info("Ingestion completed", **response)
     return response
 
-
 # ══════════════════════════════════════════════════════════════════
-# BACKUP WITH RETRY LOGIC
+# BACKUP 
 # ══════════════════════════════════════════════════════════════════
 
 @app.post("/backup/{table}")
-@retry.Retry(
-    predicate=retry.if_exception_type(exceptions.ServiceUnavailable),
-    deadline=300.0  # 5 minutes timeout
-)
 async def backup_table(table: TableName):
     """
     Export table to AVRO format in Cloud Storage
     """
     table_name = table.value
-    
     log_info("Backup initiated", table=table_name)
     
     # Validate table exists
@@ -452,7 +418,6 @@ async def backup_table(table: TableName):
             table=table_name,
             rows=row_count
         )
-        
     except NotFound:
         log_error("Table not found for backup", table=table_name)
         raise HTTPException(404, f"Table {table_name} not found")
@@ -499,16 +464,11 @@ async def backup_table(table: TableName):
         log_error("Backup failed", error=e, table=table_name)
         raise HTTPException(500, f"Backup failed: {str(e)}")
 
-
 # ══════════════════════════════════════════════════════════════════
 # RESTORE WITH VALIDATION
 # ══════════════════════════════════════════════════════════════════
 
 @app.post("/restore/{table}")
-@retry.Retry(
-    predicate=retry.if_exception_type(exceptions.ServiceUnavailable),
-    deadline=300.0
-)
 async def restore_table(table: TableName, backup_timestamp: str):
     """
     Restore table from AVRO backup
@@ -595,7 +555,6 @@ async def restore_table(table: TableName, backup_timestamp: str):
         log_error("Restore failed", error=e, table=table_name)
         raise HTTPException(500, f"Restore failed: {str(e)}")
 
-
 # ══════════════════════════════════════════════════════════════════
 # ANALYTICS ENDPOINTS (SERVING LAYER)
 # ══════════════════════════════════════════════════════════════════
@@ -604,7 +563,6 @@ async def restore_table(table: TableName, backup_timestamp: str):
 async def quarterly_hires():
     """
     Challenge #2 - Query 1: Quarterly hires by department and job
-    
     Performance: Now <100ms (Serving layer, pre-calculated by dbt)
     """
     log_info("Quarterly hires query initiated (Serving Layer)")
@@ -630,8 +588,7 @@ async def quarterly_hires():
             "Quarterly hires query completed",
             rows_returned=len(data),
             bytes_scanned=query_job.total_bytes_processed,
-            # Cambiamos esto para que sea un número total de segundos (float)
-            query_time_sec=(query_job.ended - query_job.started).total_seconds() if query_job.ended else None
+            query_time_sec=(query_job.ended - query_job.started).total_seconds() if query_job.ended else 0
         )
         
         return data
@@ -640,12 +597,10 @@ async def quarterly_hires():
         log_error("Quarterly hires query failed", error=e)
         raise HTTPException(500, f"Query failed: {str(e)}")
 
-
 @app.get("/metrics/above-mean-hires")
 async def above_mean_hires():
     """
     Challenge #2 - Query 2: Departments above mean hiring
-    
     Performance: Now <100ms (Serving layer, pre-calculated by dbt)
     """
     log_info("Above mean hires query initiated (Serving Layer)")
@@ -670,8 +625,7 @@ async def above_mean_hires():
             "Above mean query completed",
             rows_returned=len(data),
             bytes_scanned=query_job.total_bytes_processed,
-            # Cambiamos esto también aquí
-            query_time_sec=(query_job.ended - query_job.started).total_seconds() if query_job.ended else None
+            query_time_sec=(query_job.ended - query_job.started).total_seconds() if query_job.ended else 0
         )
         
         return data
@@ -679,7 +633,6 @@ async def above_mean_hires():
     except Exception as e:
         log_error("Above mean query failed", error=e)
         raise HTTPException(500, f"Query failed: {str(e)}")
-
 
 # ══════════════════════════════════════════════════════════════════
 # HEALTH CHECK WITH DETAILED STATUS
@@ -701,9 +654,8 @@ async def health():
         }
     }
     
-    # Optional: Check BigQuery connectivity
+    # Check BigQuery connectivity
     try:
-        # Quick query to verify BigQuery access
         bq_client.query("SELECT 1").result()
         health_status["dependencies"]["bigquery_accessible"] = True
     except:
@@ -711,7 +663,6 @@ async def health():
         health_status["status"] = "degraded"
     
     return health_status
-
 
 # ══════════════════════════════════════════════════════════════════
 # ERROR HANDLERS
@@ -721,7 +672,6 @@ async def health():
 async def global_exception_handler(request: Request, exc: Exception):
     """
     Global exception handler for unhandled errors
-    
     Logs all exceptions to Cloud Logging for monitoring
     """
     log_error(
@@ -739,7 +689,6 @@ async def global_exception_handler(request: Request, exc: Exception):
             "message": str(exc)
         }
     )
-
 
 # ══════════════════════════════════════════════════════════════════
 # STARTUP
