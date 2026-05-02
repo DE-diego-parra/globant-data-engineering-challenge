@@ -1,6 +1,6 @@
 # Validation Runbook
 
-Operational playbooks for different scenarios with step-by-step validation procedures.
+Operational playbooks with step-by-step validation procedures.
 
 ## Scenario 1: New CSV Files Arrive
 
@@ -10,35 +10,39 @@ Operational playbooks for different scenarios with step-by-step validation proce
 ```bash
 export PROJECT_ID="globant-migration-1777674652"
 
-gcloud storage cp hired_employees.csv gs://${PROJECT_ID}-data-lake/raw/employees/
-gcloud storage cp departments.csv gs://${PROJECT_ID}-data-lake/raw/departments/
-gcloud storage cp jobs.csv gs://${PROJECT_ID}-data-lake/raw/jobs/
+gcloud storage cp hired_employees.csv gs://globant-migration-1777674652-data-lake/raw/employees/
+gcloud storage cp departments.csv gs://globant-migration-1777674652-data-lake/raw/departments/
+gcloud storage cp jobs.csv gs://globant-migration-1777674652-data-lake/raw/jobs/
 ```
 
 **Verify:**
 ```bash
-gcloud storage ls gs://${PROJECT_ID}-data-lake/raw/*/
+gcloud storage ls gs://globant-migration-1777674652-data-lake/raw/*/
 ```
 
 ### Step 2: Update Pipeline
 ```bash
+cd ~/globant-challenge
 ./infra/update_pipeline.sh
 ```
 
 **Time:** 30-60 seconds
 
-### Step 3: Verify Loaded
+### Step 3: Verify Data Loaded
 ```bash
 bq query --use_legacy_sql=false "
-SELECT 'RAW' as layer, COUNT(*) as records FROM \`${PROJECT_ID}.globant_migration_raw.employees\`
-UNION ALL SELECT 'STAGING', COUNT(*) FROM \`${PROJECT_ID}.globant_migration_staging.employees\`
-UNION ALL SELECT 'QUARANTINE', COUNT(*) FROM \`${PROJECT_ID}.globant_migration_quarantine.employees\`
+SELECT 'RAW' as layer, COUNT(*) as records FROM \`globant-migration-1777674652.globant_migration_raw.employees\`
+UNION ALL SELECT 'STAGING', COUNT(*) FROM \`globant-migration-1777674652.globant_migration_staging.employees\`
+UNION ALL SELECT 'QUARANTINE', COUNT(*) FROM \`globant-migration-1777674652.globant_migration_quarantine.employees\`
 "
 ```
 
-### Step 4: Check MARTS
+### Step 4: Check MARTS Updated
 ```bash
-bq query --use_legacy_sql=false "SELECT * FROM \`${PROJECT_ID}.globant_migration_marts.quarterly_hires\` LIMIT 5"
+bq query --use_legacy_sql=false "
+SELECT * FROM \`globant-migration-1777674652.globant_migration_marts.quarterly_hires\`
+LIMIT 5
+"
 ```
 
 ### Step 5: Refresh Looker Studio
@@ -47,11 +51,11 @@ Open dashboard and click refresh button.
 
 ---
 
-## Scenario 2: Validate Complete System
+## Scenario 2: Complete System Validation
 
 **When:** Before demo or presentation
 
-### Step 1: API Health
+### Step 1: Check Cloud Run
 ```bash
 export SERVICE_URL=$(gcloud run services describe globant-api --region us-central1 --format 'value(status.url)')
 curl $SERVICE_URL/health
@@ -88,12 +92,15 @@ curl -X POST $SERVICE_URL/backup/employees
 
 ✅ Expected: `{"status":"success"}`
 
-### Step 6: Verify All Datasets
+### Step 6: Verify BigQuery Structure
 ```bash
-bq ls ${PROJECT_ID}: | grep globant_migration
+bq ls globant-migration-1777674652:globant_migration_raw
+bq ls globant-migration-1777674652:globant_migration_staging
+bq ls globant-migration-1777674652:globant_migration_marts
+bq ls globant-migration-1777674652:globant_migration_quarantine
 ```
 
-✅ Expected: 4 datasets
+✅ Expected: 3, 3, 2, 1 tables respectively
 
 ---
 
@@ -106,16 +113,20 @@ bq ls ${PROJECT_ID}: | grep globant_migration
 curl -X POST $SERVICE_URL/backup/employees
 ```
 
-Save timestamp from response (e.g., 20240502_143022)
+Save timestamp from response
 
 ### Step 2: Simulate Data Loss
 ```bash
-bq query --use_legacy_sql=false "DELETE FROM \`${PROJECT_ID}.globant_migration_raw.employees\` WHERE id > 4540"
+bq query --use_legacy_sql=false "
+DELETE FROM \`globant-migration-1777674652.globant_migration_raw.employees\` WHERE id > 4540
+"
 ```
 
 ### Step 3: Verify Deletion
 ```bash
-bq query --use_legacy_sql=false "SELECT COUNT(*) FROM \`${PROJECT_ID}.globant_migration_raw.employees\`"
+bq query --use_legacy_sql=false "
+SELECT COUNT(*) FROM \`globant-migration-1777674652.globant_migration_raw.employees\`
+"
 ```
 
 ### Step 4: Restore
@@ -123,9 +134,13 @@ bq query --use_legacy_sql=false "SELECT COUNT(*) FROM \`${PROJECT_ID}.globant_mi
 curl -X POST "$SERVICE_URL/restore/employees?backup_timestamp=20240502_143022"
 ```
 
+Replace timestamp with your actual backup timestamp.
+
 ### Step 5: Verify Recovery
 ```bash
-bq query --use_legacy_sql=false "SELECT COUNT(*) FROM \`${PROJECT_ID}.globant_migration_raw.employees\`"
+bq query --use_legacy_sql=false "
+SELECT COUNT(*) FROM \`globant-migration-1777674652.globant_migration_raw.employees\`
+"
 ```
 
 ✅ Expected: Original count restored
@@ -145,15 +160,15 @@ bq query --use_legacy_sql=false "SELECT COUNT(*) FROM \`${PROJECT_ID}.globant_mi
 ```bash
 bq query --use_legacy_sql=false "
 SELECT id, name, job_id, rejection_reason 
-FROM \`${PROJECT_ID}.globant_migration_quarantine.employees\`
+FROM \`globant-migration-1777674652.globant_migration_quarantine.employees\`
 "
 ```
 
-### Step 2: Count by Reason
+### Step 2: Count by Rejection Reason
 ```bash
 bq query --use_legacy_sql=false "
 SELECT rejection_reason, COUNT(*) as count
-FROM \`${PROJECT_ID}.globant_migration_quarantine.employees\`
+FROM \`globant-migration-1777674652.globant_migration_quarantine.employees\`
 GROUP BY rejection_reason
 "
 ```
@@ -162,8 +177,8 @@ GROUP BY rejection_reason
 ```bash
 bq query --use_legacy_sql=false "
 SELECT COUNT(*) as orphans
-FROM \`${PROJECT_ID}.globant_migration_staging.employees\` e
-LEFT JOIN \`${PROJECT_ID}.globant_migration_staging.departments\` d ON e.department_id = d.id
+FROM \`globant-migration-1777674652.globant_migration_staging.employees\` e
+LEFT JOIN \`globant-migration-1777674652.globant_migration_staging.departments\` d ON e.department_id = d.id
 WHERE d.id IS NULL
 "
 ```
@@ -175,8 +190,8 @@ WHERE d.id IS NULL
 bq query --use_legacy_sql=false "
 WITH m AS (
   SELECT 
-    (SELECT COUNT(*) FROM \`${PROJECT_ID}.globant_migration_raw.employees\`) as raw,
-    (SELECT COUNT(*) FROM \`${PROJECT_ID}.globant_migration_staging.employees\`) as valid
+    (SELECT COUNT(*) FROM \`globant-migration-1777674652.globant_migration_raw.employees\`) as raw,
+    (SELECT COUNT(*) FROM \`globant-migration-1777674652.globant_migration_staging.employees\`) as valid
 )
 SELECT raw, valid, ROUND(valid * 100.0 / raw, 2) as quality_pct FROM m
 "
@@ -195,41 +210,40 @@ gcloud logging read "resource.type=cloud_run_revision AND severity=ERROR" --limi
 
 ### BigQuery Query Fails
 ```bash
-bq show ${PROJECT_ID}:globant_migration_raw.employees
-bq show --schema ${PROJECT_ID}:globant_migration_raw.employees
+bq show globant-migration-1777674652:globant_migration_raw.employees
 ```
 
-### Pipeline Update Fails
+### Pipeline Fails
 
 Run steps individually:
 ```bash
-bq load --replace ${PROJECT_ID}:globant_migration_raw.employees gs://${PROJECT_ID}-data-lake/raw/employees/*.csv
-bq query "CREATE OR REPLACE TABLE staging.employees AS SELECT * FROM raw.employees WHERE ..."
+bq load --replace globant-migration-1777674652:globant_migration_raw.employees \
+  gs://globant-migration-1777674652-data-lake/raw/employees/*.csv
 ```
 
 ---
 
 ## Quick Reference
 
-### Update when CSV arrives
+### Update data
 ```bash
-gcloud storage cp new.csv gs://${PROJECT_ID}-data-lake/raw/employees/
+gcloud storage cp file.csv gs://globant-migration-1777674652-data-lake/raw/employees/
 ./infra/update_pipeline.sh
 ```
 
-### Backup
+### Backup table
 ```bash
 curl -X POST $SERVICE_URL/backup/employees
 ```
 
-### Restore
+### Restore table
 ```bash
-curl -X POST "$SERVICE_URL/restore/employees?backup_timestamp=YYYYMMDD_HHMMSS"
+curl -X POST "$SERVICE_URL/restore/employees?backup_timestamp=TIMESTAMP"
 ```
 
-### Check quality
+### Check QUARANTINE
 ```bash
-bq query "SELECT * FROM \`${PROJECT_ID}.globant_migration_quarantine.employees\`"
+bq query "SELECT * FROM \`globant-migration-1777674652.globant_migration_quarantine.employees\`"
 ```
 
 ### View logs
@@ -246,13 +260,13 @@ gcloud logging read "resource.type=cloud_run_revision" --limit 50
 
 ## Performance Benchmarks
 
-| Operation | Expected |
-|-----------|----------|
+| Operation | Expected Time |
+|-----------|---------------|
 | Health check | <100ms |
-| Ingest 10 | <800ms |
-| Ingest 1000 | <1500ms |
+| Ingest 10 records | <800ms |
+| Ingest 1000 records | <1500ms |
 | Quarterly query | <500ms |
-| Above mean | <500ms |
+| Above mean query | <500ms |
 | Pipeline update | 30-60s |
 
 ---
@@ -262,16 +276,22 @@ gcloud logging read "resource.type=cloud_run_revision" --limit 50
 ### Rollback Cloud Run
 ```bash
 gcloud run revisions list --service globant-api
-gcloud run services update-traffic globant-api --to-revisions PREVIOUS=100
+gcloud run services update-traffic globant-api --to-revisions PREVIOUS_REVISION=100
 ```
 
-### Restore BigQuery
+### Restore BigQuery Table
 ```bash
-LATEST=$(gcloud storage ls gs://${PROJECT_ID}-backups/backups/employees/ | tail -1)
-bq load --source_format=AVRO --replace ${PROJECT_ID}:globant_migration_raw.employees $LATEST
+LATEST=$(gcloud storage ls gs://globant-migration-1777674652-backups/backups/employees/ | tail -1)
+bq load --source_format=AVRO --replace globant-migration-1777674652:globant_migration_raw.employees $LATEST
 ```
 
 ### Clear QUARANTINE
 ```bash
-bq query "DELETE FROM \`${PROJECT_ID}.globant_migration_quarantine.employees\` WHERE TRUE"
+bq query "DELETE FROM \`globant-migration-1777674652.globant_migration_quarantine.employees\` WHERE TRUE"
+```
+
+### Re-run Complete Setup
+```bash
+python infra/setup_infrastructure.py globant-migration-1777674652
+./infra/update_pipeline.sh
 ```
