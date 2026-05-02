@@ -1,0 +1,14 @@
+name: Deploy to Cloud Run
+on:
+  push:
+    branches: [main]
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: us-central1
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy
+        run: echo "Deploy to Cloud Run"
