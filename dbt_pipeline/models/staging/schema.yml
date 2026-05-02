@@ -1,0 +1,24 @@
+version: 2
+
+sources:
+  - name: raw_data
+    database: globant-migration-1777674652
+    schema: globant_migration_raw
+    tables:
+      - name: employees
+      - name: departments
+      - name: jobs
+
+models:
+  - name: stg_employees
+    columns:
+      - name: id
+        tests:
+          - unique
+          - not_null
+      - name: department_id
+        tests:
+          - not_null
+      - name: job_id
+        tests:
+          - not_null

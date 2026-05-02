@@ -1,0 +1,10 @@
+globant_dbt:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: oauth
+      project: globant-migration-1777674652
+      dataset: globant_migration_staging
+      threads: 4
+      location: US
