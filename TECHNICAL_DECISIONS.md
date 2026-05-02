@@ -1,2 +1,2 @@
 # Technical Decisions
-Why I chose each technology and architecture pattern.
+Architecture rationale and benchmarks.

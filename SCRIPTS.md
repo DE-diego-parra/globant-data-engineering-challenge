@@ -1,2 +1,2 @@
 # Scripts
-Helper scripts for running the pipeline
+Pipeline automation scripts.
