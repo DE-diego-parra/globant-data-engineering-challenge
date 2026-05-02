@@ -22,7 +22,7 @@ Data Quality:
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ValidationInfo
 from google.cloud import bigquery, storage, logging as cloud_logging
 from google.cloud.exceptions import NotFound, GoogleCloudError
 from google.api_core import retry, exceptions
@@ -131,8 +131,9 @@ class Employee(BaseModel):
     department_id: int = Field(..., gt=0, description="Department ID")
     job_id: int = Field(..., gt=0, description="Job ID")
 
-    @validator("datetime")
-    def validate_datetime(cls, v):
+    @field_validator("datetime")
+    @classmethod
+    def validate_datetime(cls, v: str) -> str:
         # Captura casos como "202" o formatos incompletos
         if len(v) < 10:
             raise ValueError("no es un formato de fecha aceptable")
@@ -143,15 +144,17 @@ class Employee(BaseModel):
         except (ValueError, TypeError):
             raise ValueError("no es un formato de fecha aceptable")
         
-    @validator("department_id", "job_id")
-    def validate_ids(cls, v, field):
+    @field_validator("department_id", "job_id")
+    @classmethod
+    def validate_ids(cls, v: int, info: ValidationInfo) -> int:
         # Si el valor es negativo o cero (aunque gt=0 ya lo valida, aquí personalizamos el mensaje)
         if v <= 0:
-            raise ValueError(f"ID de {field.name} invalido: debe ser positivo")
+            raise ValueError(f"ID de {info.field_name} invalido: debe ser positivo")
         return v
     
-    @validator("name")
-    def validate_name(cls, v):
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
         """Sanitize name (prevent injection in logs)"""
         # Strip dangerous characters
         v = v.strip()
@@ -168,8 +171,9 @@ class Department(BaseModel):
     id: int = Field(..., gt=0, description="Department ID")
     department: str = Field(..., min_length=1, max_length=100, description="Department name")
     
-    @validator("department")
-    def validate_department(cls, v):
+    @field_validator("department")
+    @classmethod
+    def validate_department(cls, v: str) -> str:
         """Sanitize department name"""
         v = v.strip()
         if not v:
@@ -182,8 +186,9 @@ class Job(BaseModel):
     id: int = Field(..., gt=0, description="Job ID")
     job: str = Field(..., min_length=1, max_length=100, description="Job title")
     
-    @validator("job")
-    def validate_job(cls, v):
+    @field_validator("job")
+    @classmethod
+    def validate_job(cls, v: str) -> str:
         """Sanitize job title"""
         v = v.strip()
         if not v:
@@ -322,7 +327,8 @@ async def ingest_batch(request: BatchRequest, background_tasks: BackgroundTasks)
         try:
             # Pydantic validation (type + constraints + custom)
             validated = validator(**record)
-            valid_records.append(validated.dict())
+            # Actualizado de .dict() a .model_dump() para Pydantic V2
+            valid_records.append(validated.model_dump())
             
         except Exception as e:
             # Log validation error with record index
@@ -624,7 +630,8 @@ async def quarterly_hires():
             "Quarterly hires query completed",
             rows_returned=len(data),
             bytes_scanned=query_job.total_bytes_processed,
-            query_time_ms=query_job.ended - query_job.started if query_job.ended else None
+            # Cambiamos esto para que sea un número total de segundos (float)
+            query_time_sec=(query_job.ended - query_job.started).total_seconds() if query_job.ended else None
         )
         
         return data
@@ -662,7 +669,9 @@ async def above_mean_hires():
         log_info(
             "Above mean query completed",
             rows_returned=len(data),
-            bytes_scanned=query_job.total_bytes_processed
+            bytes_scanned=query_job.total_bytes_processed,
+            # Cambiamos esto también aquí
+            query_time_sec=(query_job.ended - query_job.started).total_seconds() if query_job.ended else None
         )
         
         return data

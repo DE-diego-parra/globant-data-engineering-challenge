@@ -2,7 +2,7 @@
   
     
 
-    create or replace table `globant-migration-1777674652`.`globant_migration_staging_staging`.`stg_employees`
+    create or replace table `globant-migration-1777674652`.`globant_migration_staging`.`employees`
       
     
     
@@ -10,7 +10,9 @@
     
     OPTIONS()
     as (
-      SELECT 
+      
+
+SELECT 
     id, 
     TRIM(name) as name, 
     FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', SAFE_CAST(datetime AS TIMESTAMP)) as datetime, 

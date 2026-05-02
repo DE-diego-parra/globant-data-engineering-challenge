@@ -5,7 +5,7 @@
 with dbt_test__target as (
 
   select id as unique_field
-  from `globant-migration-1777674652`.`globant_migration_staging_staging`.`stg_employees`
+  from `globant-migration-1777674652`.`globant_migration_staging`.`employees`
   where id is not null
 
 )

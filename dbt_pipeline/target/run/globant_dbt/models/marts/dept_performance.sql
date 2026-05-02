@@ -2,7 +2,7 @@
   
     
 
-    create or replace table `globant-migration-1777674652`.`globant_migration_staging_marts`.`dept_performance`
+    create or replace table `globant-migration-1777674652`.`globant_migration_marts`.`dept_performance`
       
     
     
@@ -15,8 +15,8 @@
         d.id,
         d.department,
         COUNT(*) as hired
-    FROM `globant-migration-1777674652`.`globant_migration_staging_staging`.`stg_employees` e
-    JOIN `globant-migration-1777674652`.`globant_migration_staging_staging`.`stg_departments` d ON e.department_id = d.id
+    FROM `globant-migration-1777674652`.`globant_migration_staging`.`employees` e
+    JOIN `globant-migration-1777674652`.`globant_migration_staging`.`departments` d ON e.department_id = d.id
     WHERE EXTRACT(YEAR FROM TIMESTAMP(e.datetime)) = 2021
     GROUP BY d.id, d.department
 ),

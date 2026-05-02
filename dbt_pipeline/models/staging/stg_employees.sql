@@ -1,3 +1,5 @@
+{{ config(alias='employees') }}
+
 SELECT 
     id, 
     TRIM(name) as name, 

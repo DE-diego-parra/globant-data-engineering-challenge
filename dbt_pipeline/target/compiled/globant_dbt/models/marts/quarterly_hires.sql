@@ -4,9 +4,9 @@ WITH quarterly_data AS (
         j.job,
         EXTRACT(QUARTER FROM TIMESTAMP(e.datetime)) as quarter,
         COUNT(*) as hires
-    FROM `globant-migration-1777674652`.`globant_migration_staging_staging`.`stg_employees` e
-    JOIN `globant-migration-1777674652`.`globant_migration_staging_staging`.`stg_departments` d ON e.department_id = d.id
-    JOIN `globant-migration-1777674652`.`globant_migration_staging_staging`.`stg_jobs` j ON e.job_id = j.id
+    FROM `globant-migration-1777674652`.`globant_migration_staging`.`employees` e
+    JOIN `globant-migration-1777674652`.`globant_migration_staging`.`departments` d ON e.department_id = d.id
+    JOIN `globant-migration-1777674652`.`globant_migration_staging`.`jobs` j ON e.job_id = j.id
     WHERE EXTRACT(YEAR FROM TIMESTAMP(e.datetime)) = 2021
     GROUP BY department, job, quarter
 )

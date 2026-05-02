@@ -1,2 +1,2 @@
-SELECT id, department 
-FROM {{ source('raw_data', 'departments') }}
+{{ config(alias='departments') }}
+SELECT id, department FROM {{ source('raw_data', 'departments') }}
