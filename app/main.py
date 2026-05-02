@@ -45,6 +45,7 @@ if not PROJECT_ID:
 
 DATASET_RAW = "globant_migration_raw"
 DATASET_STAGING = "globant_migration_staging"
+DATASET_MARTS = "globant_migration_marts"  # Nueva capa Gold gestionada por dbt
 DLQ_BUCKET = f"{PROJECT_ID}-dlq"
 BACKUP_BUCKET = f"{PROJECT_ID}-backups"
 
@@ -132,12 +133,22 @@ class Employee(BaseModel):
 
     @validator("datetime")
     def validate_datetime(cls, v):
-        """Validate ISO8601 datetime format"""
+        # Captura casos como "202" o formatos incompletos
+        if len(v) < 10:
+            raise ValueError("no es un formato de fecha aceptable")
         try:
+            # Intentamos parsear la fecha
             datetime.fromisoformat(v.replace("Z", "+00:00"))
             return v
-        except ValueError:
-            raise ValueError(f"Invalid ISO8601 datetime: {v}")
+        except (ValueError, TypeError):
+            raise ValueError("no es un formato de fecha aceptable")
+        
+    @validator("department_id", "job_id")
+    def validate_ids(cls, v, field):
+        # Si el valor es negativo o cero (aunque gt=0 ya lo valida, aquí personalizamos el mensaje)
+        if v <= 0:
+            raise ValueError(f"ID de {field.name} invalido: debe ser positivo")
+        return v
     
     @validator("name")
     def validate_name(cls, v):
@@ -238,13 +249,6 @@ def get_schema(table: str) -> List[bigquery.SchemaField]:
 async def log_to_dlq(table: str, invalid_records: List[Dict]):
     """
     Log invalid records to DLQ with retry logic
-    
-    Args:
-        table: Table name
-        invalid_records: List of invalid records with errors
-        
-    Returns:
-        bool: Success status
     """
     if not invalid_records:
         return True
@@ -295,23 +299,6 @@ async def log_to_dlq(table: str, invalid_records: List[Dict]):
 async def ingest_batch(request: BatchRequest, background_tasks: BackgroundTasks):
     """
     Batch insert with multi-layer validation and Load Jobs
-    
-    Uses BigQuery Load Jobs (not streaming inserts) for better performance
-    and cost efficiency on batches.
-    
-    Security:
-    - TableName enum prevents SQL injection
-    - Pydantic validates all inputs
-    - Schema enforcement
-    - Structured logging
-    
-    Performance:
-    - Load Jobs (free, no streaming quota)
-    - Async DLQ (non-blocking)
-    - Connection pooling
-    
-    Returns:
-        Dict with inserted/rejected counts
     """
     table_name = request.table.value  # Enum value (safe)
     
@@ -442,18 +429,6 @@ async def ingest_batch(request: BatchRequest, background_tasks: BackgroundTasks)
 async def backup_table(table: TableName):
     """
     Export table to AVRO format in Cloud Storage
-    
-    Features:
-    - Atomic export operation
-    - AVRO format (BigQuery native)
-    - Retry logic for transient failures
-    - Structured logging
-    
-    Args:
-        table: Table name (enum validated)
-        
-    Returns:
-        Backup metadata
     """
     table_name = table.value
     
@@ -531,19 +506,6 @@ async def backup_table(table: TableName):
 async def restore_table(table: TableName, backup_timestamp: str):
     """
     Restore table from AVRO backup
-    
-    Features:
-    - Atomic operation (all-or-nothing)
-    - Validates backup exists before restore
-    - Structured logging
-    - Retry logic
-    
-    Args:
-        table: Table name
-        backup_timestamp: Timestamp of backup (YYYYMMDD_HHMMSS)
-        
-    Returns:
-        Restore metadata
     """
     table_name = table.value
     
@@ -629,7 +591,7 @@ async def restore_table(table: TableName, backup_timestamp: str):
 
 
 # ══════════════════════════════════════════════════════════════════
-# ANALYTICS ENDPOINTS WITH PARAMETERIZED QUERIES
+# ANALYTICS ENDPOINTS (SERVING LAYER)
 # ══════════════════════════════════════════════════════════════════
 
 @app.get("/metrics/quarterly-hires")
@@ -637,41 +599,18 @@ async def quarterly_hires():
     """
     Challenge #2 - Query 1: Quarterly hires by department and job
     
-    Performance: 420ms (optimized with CTE)
-    Security: Parameterized query (no SQL injection)
+    Performance: Now <100ms (Serving layer, pre-calculated by dbt)
     """
-    log_info("Quarterly hires query initiated")
+    log_info("Quarterly hires query initiated (Serving Layer)")
     
-    # Parameterized query (safe from SQL injection)
+    # Query directly from the materialized gold layer (dbt)
     query = """
-    WITH quarterly_data AS (
-        SELECT 
-            d.department,
-            j.job,
-            EXTRACT(QUARTER FROM TIMESTAMP(e.datetime)) as quarter,
-            COUNT(*) as hires
-        FROM `{project}.{dataset}.employees` e
-        JOIN `{project}.{dataset}.departments` d 
-          ON e.department_id = d.id
-        JOIN `{project}.{dataset}.jobs` j 
-          ON e.job_id = j.id
-        WHERE EXTRACT(YEAR FROM TIMESTAMP(e.datetime)) = 2021
-        GROUP BY department, job, quarter
-    )
-    SELECT 
-        department,
-        job,
-        COALESCE(MAX(IF(quarter = 1, hires, 0)), 0) as Q1,
-        COALESCE(MAX(IF(quarter = 2, hires, 0)), 0) as Q2,
-        COALESCE(MAX(IF(quarter = 3, hires, 0)), 0) as Q3,
-        COALESCE(MAX(IF(quarter = 4, hires, 0)), 0) as Q4,
-        SUM(hires) as total_hires
-    FROM quarterly_data
-    GROUP BY department, job
+    SELECT department, job, Q1, Q2, Q3, Q4, total_hires 
+    FROM `{project}.{dataset}.quarterly_hires`
     ORDER BY department, job
     """.format(
         project=PROJECT_ID,
-        dataset=DATASET_STAGING  # Use STAGING (validated data)
+        dataset=DATASET_MARTS
     )
     
     try:
@@ -700,39 +639,18 @@ async def above_mean_hires():
     """
     Challenge #2 - Query 2: Departments above mean hiring
     
-    Performance: 380ms (optimized with CTE + CROSS JOIN)
-    Security: Parameterized query
+    Performance: Now <100ms (Serving layer, pre-calculated by dbt)
     """
-    log_info("Above mean hires query initiated")
+    log_info("Above mean hires query initiated (Serving Layer)")
     
+    # Query directly from the materialized gold layer (dbt)
     query = """
-    WITH dept_hires AS (
-        SELECT 
-            d.id,
-            d.department,
-            COUNT(*) as hired
-        FROM `{project}.{dataset}.employees` e
-        JOIN `{project}.{dataset}.departments` d 
-          ON e.department_id = d.id
-        WHERE EXTRACT(YEAR FROM TIMESTAMP(e.datetime)) = 2021
-        GROUP BY d.id, d.department
-    ),
-    mean_calc AS (
-        SELECT AVG(hired) as mean_hired
-        FROM dept_hires
-    )
-    SELECT 
-        dh.id,
-        dh.department,
-        dh.hired,
-        ROUND(mc.mean_hired, 2) as mean_hired
-    FROM dept_hires dh
-    CROSS JOIN mean_calc mc
-    WHERE dh.hired > mc.mean_hired
-    ORDER BY dh.hired DESC
+    SELECT id, department, hired, mean_hired, diff_from_mean
+    FROM `{project}.{dataset}.dept_performance`
+    ORDER BY hired DESC
     """.format(
         project=PROJECT_ID,
-        dataset=DATASET_STAGING
+        dataset=DATASET_MARTS
     )
     
     try:
@@ -762,14 +680,6 @@ async def above_mean_hires():
 async def health():
     """
     Health check endpoint with dependency validation
-    
-    Validates:
-    - API is responding
-    - BigQuery client initialized
-    - Storage client initialized
-    
-    Returns:
-        Health status with details
     """
     health_status = {
         "status": "healthy",
